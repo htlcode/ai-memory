@@ -261,7 +261,7 @@ Rules:
 5. Preserve existing statements for unchanged notes.
 6. Mark statements obsolete when their Markdown source changes semantically.
 7. Update FTS and tags in the same transaction as the item.
-8. Treat index failures as non-blocking in hooks, but record them in `ai-memory/index-errors.log`.
+8. Treat index failures as non-blocking in hooks, but record them in `ai-memory/logs/index-errors.log`.
 
 If `index: false`, do not insert into `memory_items`.
 

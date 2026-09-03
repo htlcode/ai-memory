@@ -12,7 +12,8 @@ backups/
 # Runtime state and logs
 .index-dirty
 .sync-index.lock
-index-errors.log
+logs/
+*.log
 
 # OS and tooling noise
 .DS_Store

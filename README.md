@@ -84,6 +84,20 @@ Si Obsidian Web Clipper crée une note avec seulement `title`, `source`, `author
 ## Fichiers générés
 
 - `.index-dirty` : marqueur temporaire, retiré après une synchronisation réussie.
-- `index-errors.log` : erreurs non bloquantes rencontrées par un hook.
+- `logs/index-errors.log` : erreurs non bloquantes rencontrées par un hook. Le dossier `logs/` est créé à la première erreur.
+- `backups/` : dumps SQLite antérieurs à une refonte de schéma.
 
-Ces fichiers ne sont pas des sources de connaissance et ne doivent pas être indexés.
+## Arborescence
+
+```text
+ai-memory/
+  schema/schema.sql   schéma SQLite appliqué à chaque synchronisation
+  src/main.go         source de l'indexeur
+  logs/               erreurs de hook, créé à la demande
+  backups/            dumps antérieurs à une refonte de schéma
+  sync-index          binaire compilé
+```
+
+`schema/schema.sql` sert aussi de marqueur pour localiser la racine du vault quand `SECOND_BRAIN_ROOT` n'est pas défini.
+
+Ces fichiers ne sont pas des sources de connaissance, ne doivent pas être indexés et restent hors du dépôt Git.

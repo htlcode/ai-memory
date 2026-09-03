@@ -33,6 +33,11 @@ const (
 	uuidNamespace                      = "6494cb59-e2bc-4adc-bb65-af25df95a72e"
 	driverName                         = "sqlite"
 	searchDeduplicationFetchMultiplier = 3
+	programDirectoryName               = "ai-memory"
+	schemaDirectoryName                = "schema"
+	schemaFileName                     = "schema.sql"
+	logDirectoryName                   = "logs"
+	errorLogFileName                   = "index-errors.log"
 )
 
 var (
@@ -194,8 +199,10 @@ func discoverPaths() (paths, error) {
 	}
 
 	root := strings.TrimSpace(os.Getenv("SECOND_BRAIN_ROOT"))
-	if root == "" && filepath.Base(filepath.Dir(executable)) == "ai-memory" {
-		root = filepath.Dir(filepath.Dir(executable))
+	executableDirectory := filepath.Dir(executable)
+	executableDirectoryName := filepath.Base(executableDirectory)
+	if root == "" && executableDirectoryName == programDirectoryName {
+		root = filepath.Dir(executableDirectory)
 	}
 	if root == "" {
 		workingDirectory, cwdErr := os.Getwd()
@@ -219,14 +226,16 @@ func discoverPaths() (paths, error) {
 		return paths{}, fmt.Errorf("resolve database path: %w", err)
 	}
 
-	programDirectory := filepath.Join(root, "ai-memory")
+	programDirectory := filepath.Join(root, programDirectoryName)
+	schemaFile := filepath.Join(programDirectory, schemaDirectoryName, schemaFileName)
+	errorLogFile := filepath.Join(programDirectory, logDirectoryName, errorLogFileName)
 	return paths{
 		executable: executable,
 		vaultRoot:  root,
 		database:   database,
-		schema:     filepath.Join(programDirectory, "schema.sql"),
+		schema:     schemaFile,
 		dirty:      filepath.Join(programDirectory, ".index-dirty"),
-		errorLog:   filepath.Join(programDirectory, "index-errors.log"),
+		errorLog:   errorLogFile,
 	}, nil
 }
 
@@ -236,7 +245,8 @@ func findVaultRoot(start string) string {
 		return ""
 	}
 	for {
-		if fileExists(filepath.Join(current, "ai-memory", "schema.sql")) {
+		marker := filepath.Join(current, programDirectoryName, schemaDirectoryName, schemaFileName)
+		if fileExists(marker) {
 			return current
 		}
 		parent := filepath.Dir(current)
