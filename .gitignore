@@ -1,0 +1,19 @@
+# Compiled indexer
+sync-index
+sync-index.exe
+
+# Vault-derived data — never commit, contains personal notes
+backups/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
+# Runtime state and logs
+.index-dirty
+.sync-index.lock
+index-errors.log
+
+# OS and tooling noise
+.DS_Store
+__pycache__/
