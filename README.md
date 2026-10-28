@@ -1,6 +1,6 @@
 ---
-title: Index SQLite du SECOND_BRAIN
-description: Commandes et comportement de l'index dérivé utilisé par Claude Code et Codex.
+title: Vault SQLite Index
+description: Commands and behavior of the derived search index used by AI coding agents.
 type: architecture_note
 status: active
 index: true
@@ -11,42 +11,42 @@ tags:
   - retrieval
 ---
 
-# Index SQLite du SECOND_BRAIN
+# Vault SQLite Index
 
-`db.sqlite` accélère la recherche, mais les fichiers Markdown restent la source canonique. Les documents HTML du vault sont également indexés pour la recherche : l'indexeur extrait leur texte visible et ne conserve ni CSS, ni JavaScript, ni commentaires HTML.
+`db.sqlite` speeds up search, but the Markdown files remain the canonical source. HTML documents in the vault are indexed too: the indexer extracts their visible text and keeps no CSS, JavaScript or HTML comments.
 
-Chaque note Markdown est aussi découpée par titres (h1 à h3, blocs de plus de 4000 caractères recoupés) dans `memory_sections_fts`. `--search` renvoie pour chaque fichier la meilleure section : chemin de titres, lignes de début et de fin, extrait. Lire ces lignes plutôt que le fichier entier. Les notes HTML n'ont pas de sections. `--check` échoue si une note Markdown non vide n'a pas de sections (index ancien : lancer `--full`). Une requête avec filtre de colonne propre aux notes (`project:<name>`) renvoie `section: null`.
+Each Markdown note is also split by headings (h1 to h3; blocks over 4000 characters are split again) into `memory_sections_fts`. `--search` returns the best section of each file: heading path, start and end lines, excerpt. Read those lines instead of the whole file. HTML notes have no sections. `--check` fails when a non-empty Markdown note has no sections (stale index: run `--full`). A query with a note-only column filter (`project:<name>`) returns `section: null`.
 
-Chaque synchronisation indexe aussi les liens Obsidian `[[...]]` entre les notes dans `memory_item_relations` (`relation = wikilink`). Ces relations rendent le contexte et les sources associées interrogeables sans modifier les fichiers Markdown. La recherche essaie d'abord tous les termes ensemble ; sans résultat, elle réessaie avec les termes séparés afin de tolérer une formulation voisine, lorsque les mêmes faits sont formulés différemment. Elle élimine aussi les résultats dont le contenu indexé est identique, afin qu'une copie locale du même document ne monopolise pas les premiers résultats.
+Each sync also indexes Obsidian `[[...]]` links between notes in `memory_item_relations` (`relation = wikilink`). These relations make context and related sources queryable without changing the Markdown files. Search first tries all terms together; with no result, it retries with the terms separated, to tolerate different wording of the same facts. It also drops results whose indexed content is identical, so a local copy of a document does not crowd the top results.
 
-L'indexeur est un binaire Go autonome pour macOS, Linux et Windows. Il indexe les fichiers `.md` avec leur frontmatter et les `.html` avec des métadonnées inférées (titre, description et projet). Il embarque SQLite avec FTS5 et ne demande ni Python, ni serveur, ni installation SQLite séparée.
+The indexer is a standalone Go binary for macOS, Linux and Windows. It indexes `.md` files with their frontmatter and `.html` files with inferred metadata (title, description and project). It embeds SQLite with FTS5 and needs no Python, server or separate SQLite install.
 
-## Commandes
+## Commands
 
 ```bash
-# Installer ou actualiser les hooks avec les chemins de cet ordinateur
+# Install or refresh the hooks with this machine's paths
 ./ai-memory/sync-index --install-hooks
 
-# Synchroniser uniquement ce qui a changé
+# Sync only what changed
 ./ai-memory/sync-index --changed
 
-# Rescanner toutes les notes et reconstruire leur entrée FTS
+# Rescan every note and rebuild its FTS entry
 ./ai-memory/sync-index --full
 
-# Vérifier SQLite, la couverture des notes et les clés canoniques
+# Check SQLite, note coverage and canonical keys
 ./ai-memory/sync-index --check
 
-# Rechercher les notes actives et les brouillons (FTS5)
+# Search active notes and drafts (FTS5)
 ./ai-memory/sync-index --search 'deploy OR runbook' --limit 10
 
-# Marquer l'index comme sale après une écriture
+# Mark the index dirty after a write
 ./ai-memory/sync-index --mark-dirty
 
-# Synchroniser seulement si une écriture l'a marqué comme sale
+# Sync only if a write marked the index dirty
 ./ai-memory/sync-index --if-dirty
 ```
 
-Sous Windows :
+On Windows:
 
 ```powershell
 .\ai-memory\sync-index.exe --install-hooks
@@ -54,54 +54,54 @@ Sous Windows :
 .\ai-memory\sync-index.exe --check
 ```
 
-## Compiler depuis les sources
+## Build from source
 
-Le code du programme reste volontairement dans un seul fichier, `src/main.go`. Go 1.25 ou plus est nécessaire uniquement pour compiler :
+The program code deliberately stays in a single file, `src/main.go`. Go 1.25 or later is needed only to build:
 
 ```bash
 cd ai-memory/src
 go build -trimpath -ldflags="-s -w" -o ../sync-index .
 ```
 
-Sous Windows :
+On Windows:
 
 ```powershell
 Set-Location ai-memory\src
 go build -trimpath -ldflags="-s -w" -o ..\sync-index.exe .
 ```
 
-Tests du découpage en sections : `cd ai-memory/src && go test ./...`.
+Section splitting tests: `cd ai-memory/src && go test ./...`.
 
-Le pilote `modernc.org/sqlite` est sans CGO : aucun compilateur C n'est nécessaire.
+The `modernc.org/sqlite` driver is CGO-free: no C compiler is needed.
 
 ## Hooks
 
-- `SessionStart` : synchronisation incrémentale, notamment pour récupérer les nouveaux Clippings.
-- `UserPromptSubmit` : seconde vérification des changements externes avant une recherche.
-- `PostToolUse` : marque l'index comme sale après une écriture.
-- `Stop` : synchronise seulement si l'index est sale.
+- `SessionStart`: incremental sync, notably to pick up new web clippings.
+- `UserPromptSubmit`: second check for external changes before a search.
+- `PostToolUse`: marks the index dirty after a write.
+- `Stop`: syncs only if the index is dirty.
 
-Claude Code et Codex appellent le même binaire détecté pendant `--install-hooks`. SQLite sérialise lui-même les écritures concurrentes avec une transaction `BEGIN IMMEDIATE` et un délai d'attente de 30 secondes.
+Claude Code and Codex call the same binary detected during `--install-hooks`. SQLite serializes concurrent writes itself with a `BEGIN IMMEDIATE` transaction and a 30-second busy timeout.
 
-Si Obsidian Web Clipper crée une note avec seulement `title`, `source`, `author`, `published`, `created`, `description` et `tags`, la synchronisation complète automatiquement les propriétés normalisées de cette note dans `Clippings/`. Le corps capturé reste inchangé.
+When Obsidian Web Clipper creates a note with only `title`, `source`, `author`, `published`, `created`, `description` and `tags`, the sync fills in the normalized properties of that note in `Clippings/`. The captured body stays unchanged.
 
-## Fichiers générés
+## Generated files
 
-- `.index-dirty` : marqueur temporaire, retiré après une synchronisation réussie.
-- `logs/index-errors.log` : erreurs non bloquantes rencontrées par un hook. Le dossier `logs/` est créé à la première erreur.
-- `backups/` : dumps SQLite antérieurs à une refonte de schéma.
+- `.index-dirty`: temporary marker, removed after a successful sync.
+- `logs/index-errors.log`: non-blocking errors hit by a hook. The `logs/` folder is created on the first error.
+- `backups/`: SQLite dumps taken before a schema overhaul.
 
-## Arborescence
+## Layout
 
 ```text
 ai-memory/
-  schema/schema.sql   schéma SQLite appliqué à chaque synchronisation
-  src/main.go         source de l'indexeur
-  logs/               erreurs de hook, créé à la demande
-  backups/            dumps antérieurs à une refonte de schéma
-  sync-index          binaire compilé
+  schema/schema.sql   SQLite schema applied on every sync
+  src/main.go         indexer source
+  logs/               hook errors, created on demand
+  backups/            dumps taken before a schema overhaul
+  sync-index          compiled binary
 ```
 
-`schema/schema.sql` sert aussi de marqueur pour localiser la racine du vault quand `SECOND_BRAIN_ROOT` n'est pas défini.
+`schema/schema.sql` also serves as a marker to locate the vault root when `SECOND_BRAIN_ROOT` is not set.
 
-Ces fichiers ne sont pas des sources de connaissance, ne doivent pas être indexés et restent hors du dépôt Git.
+These files are not knowledge sources, must not be indexed and stay out of the Git repository.
