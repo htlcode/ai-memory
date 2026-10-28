@@ -33,6 +33,11 @@ const (
 	uuidNamespace                      = "6494cb59-e2bc-4adc-bb65-af25df95a72e"
 	driverName                         = "sqlite"
 	searchDeduplicationFetchMultiplier = 3
+	sectionMaxChars                    = 4000
+	sectionHardLimitFactor             = 2
+	sectionMaxHeadingLevel             = 3
+	sectionIntroPath                   = "(intro)"
+	sectionHeadingSeparator            = " > "
 	programDirectoryName               = "ai-memory"
 	schemaDirectoryName                = "schema"
 	schemaFileName                     = "schema.sql"
@@ -49,14 +54,15 @@ var (
 	allowedStatuses = map[string]bool{
 		"draft": true, "active": true, "archived": true, "obsolete": true,
 	}
-	wikiLinkRE      = regexp.MustCompile(`\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]`)
-	htmlCommentRE   = regexp.MustCompile(`(?is)<!--.*?-->`)
-	htmlHiddenRE    = regexp.MustCompile(`(?is)<(?:script|style|template)\b[^>]*>.*?</(?:script|style|template)\s*>`)
-	htmlTitleRE     = regexp.MustCompile(`(?is)<title\b[^>]*>(.*?)</title\s*>`)
-	htmlMetaRE      = regexp.MustCompile(`(?is)<meta\b[^>]*>`)
-	htmlAttributeRE = regexp.MustCompile(`(?is)([a-z_:][-a-z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+))`)
-	htmlBlockRE     = regexp.MustCompile(`(?is)</?(?:address|article|aside|blockquote|br|caption|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|li|main|nav|ol|p|pre|section|table|td|th|tr|ul)\b[^>]*>`)
-	htmlTagRE       = regexp.MustCompile(`(?is)<[^>]+>`)
+	wikiLinkRE       = regexp.MustCompile(`\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]`)
+	htmlCommentRE    = regexp.MustCompile(`(?is)<!--.*?-->`)
+	htmlHiddenRE     = regexp.MustCompile(`(?is)<(?:script|style|template)\b[^>]*>.*?</(?:script|style|template)\s*>`)
+	htmlTitleRE      = regexp.MustCompile(`(?is)<title\b[^>]*>(.*?)</title\s*>`)
+	htmlMetaRE       = regexp.MustCompile(`(?is)<meta\b[^>]*>`)
+	htmlAttributeRE  = regexp.MustCompile(`(?is)([a-z_:][-a-z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+))`)
+	htmlBlockRE      = regexp.MustCompile(`(?is)</?(?:address|article|aside|blockquote|br|caption|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|li|main|nav|ol|p|pre|section|table|td|th|tr|ul)\b[^>]*>`)
+	htmlTagRE        = regexp.MustCompile(`(?is)<[^>]+>`)
+	sectionHeadingRE = regexp.MustCompile(`^(#{1,3})[ \t]+(.+?)[ \t]*#*[ \t]*$`)
 )
 
 type paths struct {
@@ -100,9 +106,24 @@ type note struct {
 	sourceURL    string
 	repoPath     string
 	body         string
+	bodyOffset   int
 	sourceHash   string
 	index        bool
 	metadata     metadata
+}
+
+type section struct {
+	headingPath string
+	lineStart   int
+	lineEnd     int
+	body        string
+}
+
+type sectionHit struct {
+	HeadingPath string  `json:"heading_path"`
+	LineStart   int     `json:"line_start"`
+	LineEnd     int     `json:"line_end"`
+	Excerpt     *string `json:"excerpt"`
 }
 
 type counts struct {
@@ -163,16 +184,20 @@ type checkResult struct {
 	DuplicateCanonicalKeys map[string][]string `json:"duplicate_canonical_keys"`
 	DuplicateFTSRows       [][]any             `json:"duplicate_fts_rows"`
 	OrphanFTSRows          int                 `json:"orphan_fts_rows"`
+	OrphanSectionRows      int                 `json:"orphan_section_rows"`
+	MissingSectionRows     int                 `json:"missing_section_rows"`
 }
 
 type searchResult struct {
-	Title      string  `json:"title"`
-	ItemType   string  `json:"item_type"`
-	Status     string  `json:"status"`
-	Project    *string `json:"project"`
-	SourcePath *string `json:"source_path"`
-	Excerpt    *string `json:"excerpt"`
-	Rank       float64 `json:"rank"`
+	itemID     string
+	Title      string      `json:"title"`
+	ItemType   string      `json:"item_type"`
+	Status     string      `json:"status"`
+	Project    *string     `json:"project"`
+	SourcePath *string     `json:"source_path"`
+	Excerpt    *string     `json:"excerpt"`
+	Section    *sectionHit `json:"section"`
+	Rank       float64     `json:"rank"`
 }
 
 type queryer interface {
@@ -775,13 +800,20 @@ func readHTML(path string, locations paths) (note, error) {
 	}, nil
 }
 
+func bodyLineOffset(text, body string) int {
+	frontmatterText := text[:len(text)-len(body)]
+	return strings.Count(frontmatterText, "\n")
+}
+
 func readNote(path string, locations paths, harmonizeClippings bool) (note, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return note{}, err
 	}
 	content = bytes.TrimPrefix(content, []byte{0xef, 0xbb, 0xbf})
-	meta, body := parseFrontmatter(string(content))
+	text := string(content)
+	meta, body := parseFrontmatter(text)
+	bodyOffset := bodyLineOffset(text, body)
 	relative, err := filepath.Rel(locations.vaultRoot, path)
 	if err != nil {
 		return note{}, err
@@ -794,6 +826,13 @@ func readNote(path string, locations paths, harmonizeClippings bool) (note, erro
 			return note{}, err
 		}
 		missing = nil
+		rewritten, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return note{}, readErr
+		}
+		rewrittenText := string(bytes.TrimPrefix(rewritten, []byte{0xef, 0xbb, 0xbf}))
+		_, rewrittenBody := parseFrontmatter(rewrittenText)
+		bodyOffset = bodyLineOffset(rewrittenText, rewrittenBody)
 	}
 	if len(missing) > 0 {
 		return note{}, fmt.Errorf("%s: missing frontmatter keys: %s", relative, strings.Join(missing, ", "))
@@ -836,7 +875,7 @@ func readNote(path string, locations paths, harmonizeClippings bool) (note, erro
 		"title": title, "description": description, "type": itemType,
 		"subtype": nullIfEmpty(itemSubtype), "project": nullIfEmpty(project),
 		"area": nullIfEmpty(area), "source_url": nullIfEmpty(sourceURL),
-		"tags": tags, "body": body,
+		"tags": tags, "body": body, "body_offset": bodyOffset,
 	})
 	if err != nil {
 		return note{}, fmt.Errorf("hash %s: %w", relative, err)
@@ -846,7 +885,7 @@ func readNote(path string, locations paths, harmonizeClippings bool) (note, erro
 		itemSubtype: itemSubtype, project: project, area: area, status: status,
 		priority: asText(meta.values["priority"]), canonicalKey: canonicalKey, tags: tags,
 		sourceTool: sourceTool, sourceURL: sourceURL, repoPath: asText(meta.values["repo_path"]),
-		body: body, sourceHash: hash, index: asBool(meta.values["index"], true), metadata: meta,
+		body: body, bodyOffset: bodyOffset, sourceHash: hash, index: asBool(meta.values["index"], true), metadata: meta,
 	}, nil
 }
 
@@ -1081,6 +1120,173 @@ func replaceItemFTS(ctx context.Context, database queryer, itemID string, curren
 	return err
 }
 
+func headingPath(stack []string) string {
+	names := make([]string, 0, len(stack))
+	for _, name := range stack {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return strings.Join(names, sectionHeadingSeparator)
+}
+
+func appendSection(parts []section, path string, startLine int, buffer []string) []section {
+	joined := strings.Join(buffer, "\n")
+	text := strings.TrimSpace(joined)
+	if text == "" {
+		return parts
+	}
+	if path == "" {
+		path = sectionIntroPath
+	}
+	endLine := startLine + len(buffer) - 1
+	return append(parts, section{headingPath: path, lineStart: startLine, lineEnd: endLine, body: text})
+}
+
+// splitSectionLines cuts one heading block at a blank line past sectionMaxChars, or at any line past twice that.
+func splitSectionLines(path string, startLine int, lines []string) []section {
+	parts := make([]section, 0)
+	buffer := make([]string, 0)
+	size := 0
+	partStart := startLine
+	for offset, line := range lines {
+		buffer = append(buffer, line)
+		size += len(line) + 1
+		trimmed := strings.TrimSpace(line)
+		atBoundary := trimmed == "" && size >= sectionMaxChars
+		if atBoundary == false && size < sectionMaxChars*sectionHardLimitFactor {
+			continue
+		}
+		parts = appendSection(parts, path, partStart, buffer)
+		buffer = buffer[:0]
+		size = 0
+		partStart = startLine + offset + 1
+	}
+	return appendSection(parts, path, partStart, buffer)
+}
+
+// splitSections cuts a Markdown body at h1-h3 headings, ignoring fenced code.
+func splitSections(body string, bodyOffset int) []section {
+	lines := strings.Split(body, "\n")
+	sections := make([]section, 0)
+	stack := make([]string, sectionMaxHeadingLevel)
+	path := ""
+	start := 0
+	inFence := false
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		match := sectionHeadingRE.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		parts := splitSectionLines(path, bodyOffset+start+1, lines[start:index])
+		sections = append(sections, parts...)
+		level := len(match[1])
+		stack[level-1] = strings.TrimSpace(match[2])
+		for deeper := level; deeper < len(stack); deeper++ {
+			stack[deeper] = ""
+		}
+		path = headingPath(stack)
+		start = index
+	}
+	tail := splitSectionLines(path, bodyOffset+start+1, lines[start:])
+	return append(sections, tail...)
+}
+
+func deleteSectionsFTS(ctx context.Context, database queryer, itemID string) error {
+	_, err := database.ExecContext(ctx, "DELETE FROM memory_sections_fts WHERE item_id = ?", itemID)
+	return err
+}
+
+func replaceSectionsFTS(ctx context.Context, database queryer, itemID string, current note) error {
+	if err := deleteSectionsFTS(ctx, database, itemID); err != nil {
+		return err
+	}
+	if !strings.HasSuffix(current.path, ".md") {
+		return nil
+	}
+	sections := splitSections(current.body, current.bodyOffset)
+	for position, part := range sections {
+		_, err := database.ExecContext(ctx,
+			"INSERT INTO memory_sections_fts (item_id, position, line_start, line_end, heading_path, body_md) VALUES (?, ?, ?, ?, ?, ?)",
+			itemID, position, part.lineStart, part.lineEnd, part.headingPath, part.body,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func bestSectionRowIDs(ctx context.Context, database queryer, results []searchResult, query string) (map[string]int64, error) {
+	wanted := make(map[string]bool, len(results))
+	for _, result := range results {
+		wanted[result.itemID] = true
+	}
+	rows, err := database.QueryContext(ctx,
+		"SELECT rowid, item_id, bm25(memory_sections_fts) FROM memory_sections_fts WHERE memory_sections_fts MATCH ?", query,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	bestRank := make(map[string]float64, len(results))
+	bestRow := make(map[string]int64, len(results))
+	for rows.Next() {
+		var rowID int64
+		var itemID string
+		var rank float64
+		if err = rows.Scan(&rowID, &itemID, &rank); err != nil {
+			return nil, err
+		}
+		if wanted[itemID] == false {
+			continue
+		}
+		previous, seen := bestRank[itemID]
+		if seen && previous <= rank {
+			continue
+		}
+		bestRank[itemID] = rank
+		bestRow[itemID] = rowID
+	}
+	return bestRow, rows.Err()
+}
+
+// attachSections adds the best matching section to each result. A query the sections
+// table cannot parse (for example a column filter of the items table) leaves them empty.
+func attachSections(ctx context.Context, database queryer, results []searchResult, query string) error {
+	bestRow, err := bestSectionRowIDs(ctx, database, results, query)
+	if err != nil {
+		return nil
+	}
+	for position := range results {
+		rowID, found := bestRow[results[position].itemID]
+		if found == false {
+			continue
+		}
+		var hit sectionHit
+		var excerpt sql.NullString
+		err = database.QueryRowContext(ctx, `
+			SELECT heading_path, line_start, line_end, snippet(memory_sections_fts, 5, '[', ']', ' … ', 24)
+			FROM memory_sections_fts
+			WHERE memory_sections_fts MATCH ? AND rowid = ?`, query, rowID,
+		).Scan(&hit.HeadingPath, &hit.LineStart, &hit.LineEnd, &excerpt)
+		if err != nil {
+			return err
+		}
+		hit.Excerpt = stringPointer(excerpt)
+		results[position].Section = &hit
+	}
+	return nil
+}
+
 func searchFallbackQuery(query string) string {
 	terms := strings.FieldsFunc(query, func(character rune) bool {
 		return !unicode.IsLetter(character) && !unicode.IsNumber(character)
@@ -1224,6 +1430,9 @@ func upsertNote(ctx context.Context, database queryer, current note, timestamp s
 	if err = replaceItemFTS(ctx, database, itemID, current); err != nil {
 		return "", 0, err
 	}
+	if err = replaceSectionsFTS(ctx, database, itemID, current); err != nil {
+		return "", 0, err
+	}
 	if existing != nil {
 		return "updated", statementsObsoleted, nil
 	}
@@ -1238,6 +1447,9 @@ func markItemObsolete(ctx context.Context, database queryer, itemID, timestamp s
 		return 0, err
 	}
 	if _, err := database.ExecContext(ctx, "DELETE FROM memory_items_fts WHERE item_id = ?", itemID); err != nil {
+		return 0, err
+	}
+	if err := deleteSectionsFTS(ctx, database, itemID); err != nil {
 		return 0, err
 	}
 	return obsoleteStatements(ctx, database, itemID, timestamp)
@@ -1460,6 +1672,16 @@ func checkIndex(ctx context.Context, locations paths) (checkResult, error) {
 		return result, err
 	}
 	if err = database.conn.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM memory_sections_fts s LEFT JOIN memory_items i ON i.id = s.item_id WHERE i.id IS NULL",
+	).Scan(&result.OrphanSectionRows); err != nil {
+		return result, err
+	}
+	if err = database.conn.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM memory_items WHERE source_path LIKE '%.md' AND status != 'obsolete' AND TRIM(body_md) != '' AND id NOT IN (SELECT item_id FROM memory_sections_fts)",
+	).Scan(&result.MissingSectionRows); err != nil {
+		return result, err
+	}
+	if err = database.conn.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM memory_items WHERE (source_path LIKE '%.md' OR source_path LIKE '%.html') AND status != 'obsolete'",
 	).Scan(&result.ActiveSourceRows); err != nil {
 		return result, err
@@ -1469,7 +1691,7 @@ func checkIndex(ctx context.Context, locations paths) (checkResult, error) {
 	valid := result.Integrity == "ok" && result.ForeignKeyErrors == 0 &&
 		len(result.MissingRows) == 0 && len(result.MismatchedRows) == 0 &&
 		len(result.DuplicateCanonicalKeys) == 0 && len(result.DuplicateFTSRows) == 0 &&
-		result.OrphanFTSRows == 0 && result.ActiveSourceRows == activeIndexedCount
+		result.OrphanFTSRows == 0 && result.OrphanSectionRows == 0 && result.MissingSectionRows == 0 && result.ActiveSourceRows == activeIndexedCount
 	if !valid {
 		encoded, _ := json.MarshalIndent(result, "", "  ")
 		return result, errors.New(string(encoded))
@@ -1484,7 +1706,7 @@ func searchIndex(ctx context.Context, locations paths, query string, includeArch
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(statuses)), ",")
 	statement := `
-		SELECT i.title, i.item_type, i.status, i.project, i.source_path, i.source_hash,
+		SELECT i.id, i.title, i.item_type, i.status, i.project, i.source_path, i.source_hash,
 		       snippet(memory_items_fts, 7, '[', ']', ' … ', 18) AS excerpt,
 		       bm25(memory_items_fts) AS rank
 		FROM memory_items_fts
@@ -1514,7 +1736,7 @@ func searchIndex(ctx context.Context, locations paths, query string, includeArch
 	for rows.Next() {
 		var result searchResult
 		var project, sourcePath, sourceHash, excerpt sql.NullString
-		if err = rows.Scan(&result.Title, &result.ItemType, &result.Status, &project, &sourcePath, &sourceHash, &excerpt, &result.Rank); err != nil {
+		if err = rows.Scan(&result.itemID, &result.Title, &result.ItemType, &result.Status, &project, &sourcePath, &sourceHash, &excerpt, &result.Rank); err != nil {
 			return nil, err
 		}
 		result.Project = stringPointer(project)
@@ -1536,8 +1758,12 @@ func searchIndex(ctx context.Context, locations paths, query string, includeArch
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
 	if len(results) > 0 {
-		return results, nil
+		err = attachSections(ctx, database.conn, results, query)
+		return results, err
 	}
 	fallback := searchFallbackQuery(query)
 	if fallback == "" {
@@ -1552,7 +1778,7 @@ func searchIndex(ctx context.Context, locations paths, query string, includeArch
 	for rows.Next() {
 		var result searchResult
 		var project, sourcePath, sourceHash, excerpt sql.NullString
-		if err = rows.Scan(&result.Title, &result.ItemType, &result.Status, &project, &sourcePath, &sourceHash, &excerpt, &result.Rank); err != nil {
+		if err = rows.Scan(&result.itemID, &result.Title, &result.ItemType, &result.Status, &project, &sourcePath, &sourceHash, &excerpt, &result.Rank); err != nil {
 			return nil, err
 		}
 		result.Project = stringPointer(project)
@@ -1571,7 +1797,14 @@ func searchIndex(ctx context.Context, locations paths, query string, includeArch
 			break
 		}
 	}
-	return results, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+	err = attachSections(ctx, database.conn, results, fallback)
+	return results, err
 }
 
 func stringPointer(value sql.NullString) *string {

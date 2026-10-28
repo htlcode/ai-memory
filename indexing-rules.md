@@ -32,12 +32,15 @@ memory_item_relations
 memory_tags
 memory_item_tags
 memory_items_fts
+memory_sections_fts
 memory_statements_fts
 ```
 
 `memory_items` stores the object.
 
 `memory_statements` stores the object's meaning as literal statements.
+
+`memory_sections_fts` stores each Markdown file cut at h1-h3 headings (blocks over 4000 characters are cut again at a blank line), with `heading_path`, `line_start` and `line_end` in the source file. HTML items have no sections.
 
 `memory_statement_evidence` stores proof.
 
@@ -475,7 +478,7 @@ command -> applies_to -> project
 
 When answering a technical question:
 
-1. Search `memory_items_fts`.
+1. Search `memory_items_fts`; the search output carries the best section (`heading_path`, lines) of each file. Read only those lines.
 2. Search `memory_statements_fts`.
 3. Filter by `status = active` by default; include `draft` for inbox triage and `archived` only when history is requested.
 4. Prefer exact `project` matches.
@@ -520,7 +523,7 @@ Do not delete low-score items automatically.
 For every indexed Markdown or HTML item, `ai-memory/sync-index`:
 
 1. Insert or update `memory_items`.
-2. Insert or replace the corresponding row in `memory_items_fts`.
+2. Insert or replace the corresponding row in `memory_items_fts` and the sections of the file in `memory_sections_fts`.
 3. Add tags through `memory_tags` and `memory_item_tags`.
 4. Preserve existing statement and evidence rows while the semantic source hash is unchanged.
 5. Mark statements obsolete if their source changes; statement extraction remains an explicit semantic operation.

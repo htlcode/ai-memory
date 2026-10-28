@@ -15,6 +15,8 @@ tags:
 
 `db.sqlite` accélère la recherche, mais les fichiers Markdown restent la source canonique. Les documents HTML du vault sont également indexés pour la recherche : l'indexeur extrait leur texte visible et ne conserve ni CSS, ni JavaScript, ni commentaires HTML.
 
+Chaque note Markdown est aussi découpée par titres (h1 à h3, blocs de plus de 4000 caractères recoupés) dans `memory_sections_fts`. `--search` renvoie pour chaque fichier la meilleure section : chemin de titres, lignes de début et de fin, extrait. Lire ces lignes plutôt que le fichier entier. Les notes HTML n'ont pas de sections. `--check` échoue si une note Markdown non vide n'a pas de sections (index ancien : lancer `--full`). Une requête avec filtre de colonne propre aux notes (`project:<name>`) renvoie `section: null`.
+
 Chaque synchronisation indexe aussi les liens Obsidian `[[...]]` entre les notes dans `memory_item_relations` (`relation = wikilink`). Ces relations rendent le contexte et les sources associées interrogeables sans modifier les fichiers Markdown. La recherche essaie d'abord tous les termes ensemble ; sans résultat, elle réessaie avec les termes séparés afin de tolérer une formulation voisine, lorsque les mêmes faits sont formulés différemment. Elle élimine aussi les résultats dont le contenu indexé est identique, afin qu'une copie locale du même document ne monopolise pas les premiers résultats.
 
 L'indexeur est un binaire Go autonome pour macOS, Linux et Windows. Il indexe les fichiers `.md` avec leur frontmatter et les `.html` avec des métadonnées inférées (titre, description et projet). Il embarque SQLite avec FTS5 et ne demande ni Python, ni serveur, ni installation SQLite séparée.
@@ -67,6 +69,8 @@ Sous Windows :
 Set-Location ai-memory\src
 go build -trimpath -ldflags="-s -w" -o ..\sync-index.exe .
 ```
+
+Tests du découpage en sections : `cd ai-memory/src && go test ./...`.
 
 Le pilote `modernc.org/sqlite` est sans CGO : aucun compilateur C n'est nécessaire.
 

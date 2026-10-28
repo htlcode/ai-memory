@@ -141,30 +141,6 @@ CREATE TABLE IF NOT EXISTS memory_item_relations (
   FOREIGN KEY (to_item_id) REFERENCES memory_items(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS memory_item_events (
-  id TEXT PRIMARY KEY,
-  item_id TEXT NOT NULL,
-  event_type TEXT NOT NULL,
-  old_status TEXT,
-  new_status TEXT,
-  note TEXT,
-  tool TEXT,
-  actor TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-  FOREIGN KEY (item_id) REFERENCES memory_items(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS memory_embeddings (
-  item_id TEXT PRIMARY KEY,
-  embedding_model TEXT NOT NULL,
-  dimensions INTEGER NOT NULL,
-  embedding_json TEXT NOT NULL,
-  embedded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-  FOREIGN KEY (item_id) REFERENCES memory_items(id) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS memory_tags (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
@@ -206,6 +182,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_statements_fts USING fts5(
   scope
 );
 
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_sections_fts USING fts5(
+  item_id UNINDEXED,
+  position UNINDEXED,
+  line_start UNINDEXED,
+  line_end UNINDEXED,
+  heading_path,
+  body_md
+);
+
 CREATE INDEX IF NOT EXISTS idx_items_type_project ON memory_items(item_type, project);
 CREATE INDEX IF NOT EXISTS idx_items_project_status ON memory_items(project, status);
 CREATE INDEX IF NOT EXISTS idx_items_status_score ON memory_items(status, relevant_score);
@@ -225,7 +210,6 @@ CREATE INDEX IF NOT EXISTS idx_statement_evidence_source ON memory_statement_evi
 
 CREATE INDEX IF NOT EXISTS idx_item_relations_from ON memory_item_relations(from_item_id, relation);
 CREATE INDEX IF NOT EXISTS idx_item_relations_to ON memory_item_relations(to_item_id, relation);
-CREATE INDEX IF NOT EXISTS idx_item_events_item ON memory_item_events(item_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_tags_name ON memory_tags(name);
 CREATE INDEX IF NOT EXISTS idx_item_tags_tag ON memory_item_tags(tag_id);
 
