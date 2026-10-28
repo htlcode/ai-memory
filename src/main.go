@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 )
@@ -62,7 +63,8 @@ var (
 	htmlAttributeRE  = regexp.MustCompile(`(?is)([a-z_:][-a-z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+))`)
 	htmlBlockRE      = regexp.MustCompile(`(?is)</?(?:address|article|aside|blockquote|br|caption|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|li|main|nav|ol|p|pre|section|table|td|th|tr|ul)\b[^>]*>`)
 	htmlTagRE        = regexp.MustCompile(`(?is)<[^>]+>`)
-	sectionHeadingRE = regexp.MustCompile(`^(#{1,3})[ \t]+(.+?)[ \t]*#*[ \t]*$`)
+	sectionHeadingRE = regexp.MustCompile(`^(#{1,3})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$`)
+	sectionFenceRE   = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
 )
 
 type paths struct {
@@ -1130,6 +1132,17 @@ func headingPath(stack []string) string {
 	return strings.Join(names, sectionHeadingSeparator)
 }
 
+// lastTextLine returns the index of the last non-blank line, or -1 when every line is blank.
+func lastTextLine(buffer []string) int {
+	for index := len(buffer) - 1; index >= 0; index-- {
+		trimmed := strings.TrimSpace(buffer[index])
+		if trimmed != "" {
+			return index
+		}
+	}
+	return -1
+}
+
 func appendSection(parts []section, path string, startLine int, buffer []string) []section {
 	joined := strings.Join(buffer, "\n")
 	text := strings.TrimSpace(joined)
@@ -1139,8 +1152,21 @@ func appendSection(parts []section, path string, startLine int, buffer []string)
 	if path == "" {
 		path = sectionIntroPath
 	}
-	endLine := startLine + len(buffer) - 1
+	lastLine := lastTextLine(buffer)
+	endLine := startLine + lastLine
 	return append(parts, section{headingPath: path, lineStart: startLine, lineEnd: endLine, body: text})
+}
+
+// sectionCutDue tells whether a block reached its soft limit at a blank line, or its hard limit anywhere.
+func sectionCutDue(size int, line string) bool {
+	if size >= sectionMaxChars*sectionHardLimitFactor {
+		return true
+	}
+	if size < sectionMaxChars {
+		return false
+	}
+	trimmed := strings.TrimSpace(line)
+	return trimmed == ""
 }
 
 // splitSectionLines cuts one heading block at a blank line past sectionMaxChars, or at any line past twice that.
@@ -1151,10 +1177,9 @@ func splitSectionLines(path string, startLine int, lines []string) []section {
 	partStart := startLine
 	for offset, line := range lines {
 		buffer = append(buffer, line)
-		size += len(line) + 1
-		trimmed := strings.TrimSpace(line)
-		atBoundary := trimmed == "" && size >= sectionMaxChars
-		if atBoundary == false && size < sectionMaxChars*sectionHardLimitFactor {
+		lineChars := utf8.RuneCountInString(line)
+		size += lineChars + 1
+		if sectionCutDue(size, line) == false {
 			continue
 		}
 		parts = appendSection(parts, path, partStart, buffer)
@@ -1165,28 +1190,86 @@ func splitSectionLines(path string, startLine int, lines []string) []section {
 	return appendSection(parts, path, partStart, buffer)
 }
 
+type codeFence struct {
+	marker byte
+	length int
+}
+
+// parseFenceOpening reads a CommonMark fence opener; a backtick fence cannot carry a backtick in its info string.
+func parseFenceOpening(line string) (codeFence, bool) {
+	match := sectionFenceRE.FindStringSubmatch(line)
+	if match == nil {
+		return codeFence{}, false
+	}
+	marker := match[1][0]
+	if marker == '`' {
+		if strings.Contains(match[2], "`") {
+			return codeFence{}, false
+		}
+	}
+	return codeFence{marker: marker, length: len(match[1])}, true
+}
+
+func closesFence(line string, open codeFence) bool {
+	match := sectionFenceRE.FindStringSubmatch(line)
+	if match == nil {
+		return false
+	}
+	if match[1][0] != open.marker {
+		return false
+	}
+	if len(match[1]) < open.length {
+		return false
+	}
+	rest := strings.TrimSpace(match[2])
+	return rest == ""
+}
+
+// fencedLines marks the lines inside closed code fences. An opener never closed is treated as text.
+func fencedLines(lines []string) []bool {
+	fenced := make([]bool, len(lines))
+	for index := 0; index < len(lines); index++ {
+		open, isOpening := parseFenceOpening(lines[index])
+		if isOpening == false {
+			continue
+		}
+		closing := -1
+		for candidate := index + 1; candidate < len(lines); candidate++ {
+			if closesFence(lines[candidate], open) {
+				closing = candidate
+				break
+			}
+		}
+		if closing == -1 {
+			continue
+		}
+		for inside := index; inside <= closing; inside++ {
+			fenced[inside] = true
+		}
+		index = closing
+	}
+	return fenced
+}
+
 // splitSections cuts a Markdown body at h1-h3 headings, ignoring fenced code.
 func splitSections(body string, bodyOffset int) []section {
 	lines := strings.Split(body, "\n")
+	fenced := fencedLines(lines)
 	sections := make([]section, 0)
 	stack := make([]string, sectionMaxHeadingLevel)
 	path := ""
 	start := 0
-	inFence := false
 	for index, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			inFence = !inFence
-			continue
-		}
-		if inFence {
+		if fenced[index] {
 			continue
 		}
 		match := sectionHeadingRE.FindStringSubmatch(line)
 		if match == nil {
 			continue
 		}
-		parts := splitSectionLines(path, bodyOffset+start+1, lines[start:index])
+		blockStart := bodyOffset + start + 1
+		blockLines := lines[start:index]
+		parts := splitSectionLines(path, blockStart, blockLines)
 		sections = append(sections, parts...)
 		level := len(match[1])
 		stack[level-1] = strings.TrimSpace(match[2])
@@ -1196,7 +1279,9 @@ func splitSections(body string, bodyOffset int) []section {
 		path = headingPath(stack)
 		start = index
 	}
-	tail := splitSectionLines(path, bodyOffset+start+1, lines[start:])
+	tailStart := bodyOffset + start + 1
+	tailLines := lines[start:]
+	tail := splitSectionLines(path, tailStart, tailLines)
 	return append(sections, tail...)
 }
 
@@ -1225,64 +1310,67 @@ func replaceSectionsFTS(ctx context.Context, database queryer, itemID string, cu
 	return nil
 }
 
-func bestSectionRowIDs(ctx context.Context, database queryer, results []searchResult, query string) (map[string]int64, error) {
-	wanted := make(map[string]bool, len(results))
-	for _, result := range results {
-		wanted[result.itemID] = true
+// isSectionQueryError tells whether the sections table rejected the query itself,
+// for example a column filter that exists only on the items table.
+func isSectionQueryError(err error) bool {
+	message := err.Error()
+	if strings.Contains(message, "no such column") {
+		return true
 	}
-	rows, err := database.QueryContext(ctx,
-		"SELECT rowid, item_id, bm25(memory_sections_fts) FROM memory_sections_fts WHERE memory_sections_fts MATCH ?", query,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	bestRank := make(map[string]float64, len(results))
-	bestRow := make(map[string]int64, len(results))
-	for rows.Next() {
-		var rowID int64
-		var itemID string
-		var rank float64
-		if err = rows.Scan(&rowID, &itemID, &rank); err != nil {
-			return nil, err
-		}
-		if wanted[itemID] == false {
-			continue
-		}
-		previous, seen := bestRank[itemID]
-		if seen && previous <= rank {
-			continue
-		}
-		bestRank[itemID] = rank
-		bestRow[itemID] = rowID
-	}
-	return bestRow, rows.Err()
+	return strings.Contains(message, "fts5")
 }
 
-// attachSections adds the best matching section to each result. A query the sections
-// table cannot parse (for example a column filter of the items table) leaves them empty.
+// attachSections adds the best matching section to each result in one query.
+// A query the sections table cannot parse leaves the sections empty.
 func attachSections(ctx context.Context, database queryer, results []searchResult, query string) error {
-	bestRow, err := bestSectionRowIDs(ctx, database, results, query)
-	if err != nil {
+	if len(results) == 0 {
 		return nil
 	}
-	for position := range results {
-		rowID, found := bestRow[results[position].itemID]
-		if found == false {
-			continue
+	placeholders := make([]string, len(results))
+	arguments := make([]any, 0, len(results)+1)
+	arguments = append(arguments, query)
+	for position, result := range results {
+		placeholders[position] = "?"
+		arguments = append(arguments, result.itemID)
+	}
+	idList := strings.Join(placeholders, ", ")
+	statement := `
+		SELECT item_id, heading_path, line_start, line_end, snippet(memory_sections_fts, 5, '[', ']', ' … ', 24)
+		FROM memory_sections_fts
+		WHERE memory_sections_fts MATCH ? AND item_id IN (` + idList + `)
+		ORDER BY bm25(memory_sections_fts)`
+	rows, err := database.QueryContext(ctx, statement, arguments...)
+	if err != nil {
+		if isSectionQueryError(err) {
+			return nil
 		}
+		return err
+	}
+	defer rows.Close()
+	best := make(map[string]*sectionHit, len(results))
+	for rows.Next() {
+		var itemID string
 		var hit sectionHit
 		var excerpt sql.NullString
-		err = database.QueryRowContext(ctx, `
-			SELECT heading_path, line_start, line_end, snippet(memory_sections_fts, 5, '[', ']', ' … ', 24)
-			FROM memory_sections_fts
-			WHERE memory_sections_fts MATCH ? AND rowid = ?`, query, rowID,
-		).Scan(&hit.HeadingPath, &hit.LineStart, &hit.LineEnd, &excerpt)
-		if err != nil {
+		if err = rows.Scan(&itemID, &hit.HeadingPath, &hit.LineStart, &hit.LineEnd, &excerpt); err != nil {
 			return err
 		}
+		_, seen := best[itemID]
+		if seen {
+			continue
+		}
 		hit.Excerpt = stringPointer(excerpt)
-		results[position].Section = &hit
+		best[itemID] = &hit
+	}
+	if err = rows.Err(); err != nil {
+		if isSectionQueryError(err) {
+			return nil
+		}
+		return err
+	}
+	for position := range results {
+		itemID := results[position].itemID
+		results[position].Section = best[itemID]
 	}
 	return nil
 }
@@ -1677,7 +1765,7 @@ func checkIndex(ctx context.Context, locations paths) (checkResult, error) {
 		return result, err
 	}
 	if err = database.conn.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM memory_items WHERE source_path LIKE '%.md' AND status != 'obsolete' AND TRIM(body_md) != '' AND id NOT IN (SELECT item_id FROM memory_sections_fts)",
+		"SELECT COUNT(*) FROM memory_items WHERE source_path LIKE '%.md' AND status != 'obsolete' AND TRIM(body_md, char(32, 9, 10, 13)) != '' AND id NOT IN (SELECT item_id FROM memory_sections_fts)",
 	).Scan(&result.MissingSectionRows); err != nil {
 		return result, err
 	}

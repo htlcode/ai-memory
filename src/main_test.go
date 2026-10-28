@@ -10,17 +10,17 @@ func TestSplitSectionsHeadingPathAndLines(t *testing.T) {
 	sections := splitSections(body, 4)
 
 	expected := []section{
-		{headingPath: sectionIntroPath, lineStart: 5, lineEnd: 7, body: "intro line"},
-		{headingPath: "Title", lineStart: 7, lineEnd: 10, body: "# Title\n\ntext a"},
-		{headingPath: "Title > Part", lineStart: 11, lineEnd: 14, body: "## Part\n\ntext b"},
-		{headingPath: "Title > Part > Detail", lineStart: 15, lineEnd: 18, body: "### Detail\n\ntext c"},
+		{headingPath: sectionIntroPath, lineStart: 5, lineEnd: 5, body: "intro line"},
+		{headingPath: "Title", lineStart: 7, lineEnd: 9, body: "# Title\n\ntext a"},
+		{headingPath: "Title > Part", lineStart: 11, lineEnd: 13, body: "## Part\n\ntext b"},
+		{headingPath: "Title > Part > Detail", lineStart: 15, lineEnd: 17, body: "### Detail\n\ntext c"},
 	}
 	if len(sections) != len(expected) {
 		t.Fatalf("got %d sections, want %d: %+v", len(sections), len(expected), sections)
 	}
 	for position, want := range expected {
 		got := sections[position]
-		if got.headingPath != want.headingPath || got.lineStart != want.lineStart || got.body != want.body {
+		if got != want {
 			t.Errorf("section %d = %+v, want %+v", position, got, want)
 		}
 	}
@@ -94,5 +94,62 @@ func TestBodyLineOffset(t *testing.T) {
 	offset := bodyLineOffset(text, body)
 	if offset != 3 {
 		t.Errorf("offset = %d, want 3", offset)
+	}
+}
+
+func TestSplitSectionsLongerFenceContainsShorterOne(t *testing.T) {
+	body := "# Title\n\n````md\n```\n# comment\n```\n````\n\ntail\n"
+	sections := splitSections(body, 0)
+
+	if len(sections) != 1 {
+		t.Fatalf("got %d sections, want 1: %+v", len(sections), sections)
+	}
+}
+
+func TestSplitSectionsUnclosedFenceKeepsLaterHeadings(t *testing.T) {
+	body := "# Title\n\n```\ncode\n\n# Next\n\ntext\n"
+	sections := splitSections(body, 0)
+
+	if len(sections) != 2 {
+		t.Fatalf("got %d sections, want 2: %+v", len(sections), sections)
+	}
+	if sections[1].headingPath != "Next" {
+		t.Errorf("heading path = %q, want %q", sections[1].headingPath, "Next")
+	}
+}
+
+func TestSplitSectionsInlineBackticksAreNotAFence(t *testing.T) {
+	body := "# Title\n\n```code```\n\n# Next\n\ntext\n"
+	sections := splitSections(body, 0)
+
+	if len(sections) != 2 {
+		t.Fatalf("got %d sections, want 2: %+v", len(sections), sections)
+	}
+}
+
+func TestSplitSectionsKeepsHashInsideHeading(t *testing.T) {
+	cases := map[string]string{
+		"## C#\n":        "C#",
+		"## Issue #\n":   "Issue",
+		"## Closed ##\n": "Closed",
+	}
+	for body, want := range cases {
+		sections := splitSections(body, 0)
+		if len(sections) != 1 {
+			t.Fatalf("%q: got %d sections", body, len(sections))
+		}
+		if sections[0].headingPath != want {
+			t.Errorf("%q: heading path = %q, want %q", body, sections[0].headingPath, want)
+		}
+	}
+}
+
+func TestSplitSectionsCountsCharactersNotBytes(t *testing.T) {
+	paragraph := strings.Repeat("日本語", 400)
+	body := "# Title\n\n" + paragraph + "\n\n" + paragraph + "\n"
+	sections := splitSections(body, 0)
+
+	if len(sections) != 1 {
+		t.Errorf("2400 characters were cut into %d sections, want 1", len(sections))
 	}
 }
