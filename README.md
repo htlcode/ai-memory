@@ -76,12 +76,16 @@ The `modernc.org/sqlite` driver is CGO-free: no C compiler is needed.
 
 ## Hooks
 
-- `SessionStart`: incremental sync, notably to pick up new web clippings.
-- `UserPromptSubmit`: second check for external changes before a search.
-- `PostToolUse`: marks the index dirty after a write.
-- `Stop`: syncs only if the index is dirty.
+Hooks keep the index up to date without running commands by hand. `--install-hooks` writes them once into the vault's project settings: `.claude/settings.local.json` for Claude Code and `.codex/hooks.json` for Codex. Both point to this binary's path on the current machine; run it again after moving the vault.
 
-Claude Code and Codex call the same binary detected during `--install-hooks`. SQLite serializes concurrent writes itself with a `BEGIN IMMEDIATE` transaction and a 30-second busy timeout.
+| Event | Command | Effect |
+| --- | --- | --- |
+| `SessionStart` | `--changed` | Syncs files changed outside the agent (new web clippings, manual edits). |
+| `UserPromptSubmit` | `--changed` | Same check before each prompt, so a search sees the latest files. |
+| `PostToolUse` (file edit) | `--mark-dirty` | Only flags the index; no sync after each edit. |
+| `Stop` | `--if-dirty` | Syncs once at the end of the turn if a file was edited. |
+
+Several agents can run at the same time: SQLite queues their writes (`BEGIN IMMEDIATE`, 30-second wait).
 
 When Obsidian Web Clipper creates a note with only `title`, `source`, `author`, `published`, `created`, `description` and `tags`, the sync fills in the normalized properties of that note in `Clippings/`. The captured body stays unchanged.
 
